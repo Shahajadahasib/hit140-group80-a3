@@ -1,13 +1,7 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-
-
 # ==================================================================
 # FIFA WORLD CUP 2026 - OBJECTIVE 2 - LINEAR REGRESSION
 #   2.1 : Goal DIFFERENCE (104 rows)   2.2 : Goals SCORED (208 rows)
-# Loads the two ready-made datasets directly (no sheet names needed).
+# Loads the two datasets from data/*.csv
 # ==================================================================
 import os, warnings
 import numpy as np
@@ -27,16 +21,14 @@ SEED = 2026
 np.random.seed(SEED)
 
 # ---------------- paths ----------------
-HERE = os.path.dirname(os.path.abspath(__file__))   # folder this script is in
+# Paths are relative to this file, so the script runs on any computer
+# after cloning the repo. Datasets are saved as .csv (Yakub, Objective 1 Padlet).
+HERE = os.path.dirname(os.path.abspath(__file__))   # notebooks/ folder
 BASE_DIR = os.path.join(HERE, "..", "data")
-FILE_21 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_1_104rows.xlsx")
-FILE_22 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_2_208rows.xlsx")
-OUTPUT_DIR = os.path.join(HERE, "..", "figures")
-try:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-except PermissionError:
-    OUTPUT_DIR = os.path.join(os.path.expanduser("~"), "Objective2_Output")
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+FILE_21 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_1_104rows.csv")
+FILE_22 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_2_208rows.csv")
+OUTPUT_DIR = os.path.join(HERE, "..", "figures")    # charts and tables are saved here
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 SHOW_PLOTS = True
 
 # ---------------- expected columns ----------------
@@ -50,8 +42,8 @@ NON_PREDICTORS = {"match_id", "team", "team_a", "team_b", "opp", "date", "stage"
 
 
 def load_dataset(path, y_col, x_cols, expected_rows):
-    """Read first sheet (whatever its name) and work out predictors."""
-    df = pd.read_excel(path, sheet_name=0)
+    """Read the .csv dataset and work out predictors."""
+    df = pd.read_csv(path)
     df.columns = df.columns.astype(str).str.strip().str.replace(" ", "_")
     print(f"\n{os.path.basename(path)} -> {df.shape}")
     print("Columns found:", list(df.columns))
@@ -155,6 +147,22 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
     print(df[x_cols + [y_col]].corr()[y_col].drop(y_col)
           .sort_values(key=np.abs, ascending=False).round(3))
 
+    # EDA check (Yakub, Objective 2 Padlet, 1 Oct): confirm each variable chosen
+    # by logic with a scatterplot and Pearson correlation against the response
+    print("\nPEARSON r AND p-VALUE FOR EACH VARIABLE (EDA check)"); print("-" * 80)
+    fig_s, axs = plt.subplots(2, 4, figsize=(16, 7.5))
+    for axx, col in zip(axs.ravel(), x_cols):
+        r, p = stats.pearsonr(df[col], df[y_col])
+        print(f"{col:28s} r = {r:6.3f}   p = {p:.4f}")
+        axx.scatter(df[col], df[y_col], alpha=0.6)
+        slope, intercept = np.polyfit(df[col], df[y_col], 1)
+        line_x = np.linspace(df[col].min(), df[col].max(), 50)
+        axx.plot(line_x, slope * line_x + intercept, "r--")
+        axx.set(title=f"{col}\nr = {r:.2f}, p = {p:.3f}", xlabel=col, ylabel=y_col)
+    fig_s.suptitle(f"{tag}: each explanatory variable vs {y_col}", fontsize=13)
+    fig_s.tight_layout()
+    fig_s.savefig(os.path.join(OUTPUT_DIR, f"{tag}_scatter_pearson.png"), dpi=150)
+
     Xc = sm.add_constant(df[x_cols], has_constant="add")
     vif = pd.DataFrame({"Variable": x_cols,
                         "VIF": [variance_inflation_factor(Xc.values, i + 1)
@@ -254,6 +262,55 @@ res22 = run_regression(dataset_22, X22_COLS, Y22,
                        "LINEAR REGRESSION 2.2 - GOALS SCORED (208 team-match rows)",
                        "Model_2_2", groups=groups22)
 
+# ==============================================================
+# COMPETING ALGORITHMS (Yakub, Objective 2 Padlet, 1 Oct)
+# Linear regression is built first (above), then compared with other
+# scikit-learn regressors (ensemble) using the same repeated 5-fold CV.
+# ==============================================================
+from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
+
+
+def compare_algorithms(df, x_cols, y_col, tag, groups=None, n_repeats=20):
+    X, y = df[x_cols].values, df[y_col].values
+    candidates = {
+        "Linear Regression": LinearRegression(),
+        "Random Forest": RandomForestRegressor(random_state=SEED),
+        "Gradient Boosting": GradientBoostingRegressor(random_state=SEED),
+    }
+    rows = []
+    for name, model in candidates.items():
+        r2s, rmses, maes = [], [], []
+        for rep in range(n_repeats):
+            if groups is None:
+                splitter = KFold(5, shuffle=True, random_state=SEED + rep).split(X)
+            else:
+                splitter = GroupKFold(5, shuffle=True, random_state=SEED + rep).split(X, y, groups)
+            for a, b in splitter:
+                pred = model.fit(X[a], y[a]).predict(X[b])
+                r2s.append(r2_score(y[b], pred))
+                rmses.append(rmse(y[b], pred))
+                maes.append(mean_absolute_error(y[b], pred))
+        rows.append({"Algorithm": name, "CV_R2": np.mean(r2s),
+                     "CV_RMSE": np.mean(rmses), "CV_MAE": np.mean(maes)})
+    table = pd.DataFrame(rows).sort_values("CV_RMSE").reset_index(drop=True)
+    print(f"\nCOMPETING ALGORITHMS - {tag} (5-fold CV x{n_repeats})"); print("-" * 80)
+    print(table.round(4).to_string(index=False))
+    best = table.loc[0, "Algorithm"]
+    print(f"Lowest CV RMSE: {best} ")
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.barh(table["Algorithm"], table["CV_RMSE"])
+    ax.set(title=f"{tag}: competing algorithms (lower RMSE is better)", xlabel="Mean CV RMSE")
+    ax.invert_yaxis(); fig.tight_layout()
+    fig.savefig(os.path.join(OUTPUT_DIR, f"{tag}_algorithm_comparison.png"), dpi=150)
+    plt.close(fig)
+    table.to_csv(os.path.join(OUTPUT_DIR, f"{tag}_algorithm_comparison.csv"), index=False)
+    return table
+
+
+cmp21 = compare_algorithms(dataset_21, X21_COLS, Y21, "Model_2_1")
+cmp22 = compare_algorithms(dataset_22, X22_COLS, Y22, "Model_2_2", groups=groups22)
+
 summary = pd.DataFrame([res21, res22])
 print("\n\n" + "=" * 80); print("FINAL MODEL COMPARISON"); print("=" * 80)
 print(summary.round(4).T.to_string(header=False))
@@ -263,4 +320,3 @@ dataset_22.to_csv(os.path.join(OUTPUT_DIR, "Dataset_2_2_used.csv"), index=False)
 summary.to_excel(os.path.join(OUTPUT_DIR, "Objective2_Results_Summary.xlsx"), index=False)
 print("\nAll outputs saved in:", OUTPUT_DIR)
 print("OBJECTIVE 2 ANALYSIS COMPLETE")
-
