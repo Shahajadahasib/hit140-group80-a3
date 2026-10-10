@@ -1,8 +1,6 @@
-# ==================================================================
 # FIFA WORLD CUP 2026 - OBJECTIVE 2 - LINEAR REGRESSION
 #   2.1 : Goal DIFFERENCE (104 rows)   2.2 : Goals SCORED (208 rows)
-# Loads the two datasets from data/*.csv
-# ==================================================================
+# Loads the two datasets from csv files (converted in 00_convert_to_csv.py)
 import os, warnings
 import numpy as np
 import pandas as pd
@@ -20,10 +18,11 @@ warnings.filterwarnings("ignore")
 SEED = 2026
 np.random.seed(SEED)
 
-# ---------------- paths ----------------
-# Paths are relative to this file, so the script runs on any computer
-# after cloning the repo. Datasets are saved as .csv (Yakub, Objective 1 Padlet).
-HERE = os.path.dirname(os.path.abspath(__file__))   # notebooks/ folder
+
+
+# paths are relative to this file 
+# after cloning the repo datasets are saved as csv
+HERE = os.path.dirname(os.path.abspath(__file__))   # notebooks folder
 BASE_DIR = os.path.join(HERE, "..", "data")
 FILE_21 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_1_104rows.csv")
 FILE_22 = os.path.join(BASE_DIR, "FIFA_WC2026_Dataset_2_2_208rows.csv")
@@ -31,7 +30,7 @@ OUTPUT_DIR = os.path.join(HERE, "..", "figures")    # charts and tables are save
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 SHOW_PLOTS = True
 
-# ---------------- expected columns ----------------
+#expected columns 
 Y21, Y22 = "Goal_Difference", "Goals_Scored"
 X21_COLS = ["Rank_Diff", "Host_Diff", "Rest_Days_Diff", "Prior_GF_Diff",
             "Prior_GA_Diff", "Prior_PPG_Diff", "Age_Diff", "Log_Value_Diff"]
@@ -54,7 +53,6 @@ def load_dataset(path, y_col, x_cols, expected_rows):
     if all(c in df.columns for c in x_cols):
         xs = x_cols
     else:
-        # fall back: every numeric column that is not an ID and not the DV
         xs = [c for c in df.select_dtypes("number").columns
               if c != y_col and c.lower() not in NON_PREDICTORS]
         print("Expected predictor names not all present; using:", xs)
@@ -77,7 +75,7 @@ print("=" * 80)
 dataset_21, X21_COLS = load_dataset(FILE_21, Y21, X21_COLS, 104)
 dataset_22, X22_COLS = load_dataset(FILE_22, Y22, X22_COLS, 208)
 
-# max-4-shared rule (by concept, only checked for the standard names)
+# max 4 shared rules
 CONCEPT = {
     "Rank_Diff": "FIFA rank", "Host_Diff": "Host status",
     "Rest_Days_Diff": "Rest days", "Prior_GF_Diff": "Prior goals scored",
@@ -94,13 +92,11 @@ print("\nShared concepts (max 4):", len(shared), shared)
 if len(shared) > 4:
     print("WARNING: more than 4 shared explanatory variables!")
 
-# groups for model 2.2 (both teams of one match stay together)
+# groups for model 2.2 both teams of one match stay together
 groups22 = dataset_22["Match_ID"].values if "Match_ID" in dataset_22.columns else None
 
 
-# ==============================================================
-# MODELLING FUNCTIONS
-# ==============================================================
+# modeling functions
 def rmse(y, yhat):
     return float(np.sqrt(mean_squared_error(y, yhat)))
 
@@ -118,8 +114,7 @@ def evaluate_split(df, x_cols, y_col, groups=None):
             "Test_MAE": mean_absolute_error(y[te], pred),
             "Baseline_RMSE": rmse(y[te], np.full(len(te), y[tr].mean()))}
 
-    # Repeated 5-fold CV: 20 different random splits, so the result does not
-    # depend on one lucky or unlucky split (grouped by Match_ID for model 2.2)
+    # repeated 5 fold cv: 20 different random splits, so the result does not depend on one lucky or unlucky split (in model 2.2).
     N_REPEATS = 20
     r2s, rm, ma, bs = [], [], [], []
     for rep in range(N_REPEATS):
@@ -147,8 +142,7 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
     print(df[x_cols + [y_col]].corr()[y_col].drop(y_col)
           .sort_values(key=np.abs, ascending=False).round(3))
 
-    # EDA check (Yakub, Objective 2 Padlet, 1 Oct): confirm each variable chosen
-    # by logic with a scatterplot and Pearson correlation against the response
+    # Eda check : confirm each variable chosen by logic with a scatterplot and Pearson correlation against the response
     print("\nPEARSON r AND p-VALUE FOR EACH VARIABLE (EDA check)"); print("-" * 80)
     fig_s, axs = plt.subplots(2, 4, figsize=(16, 7.5))
     for axx, col in zip(axs.ravel(), x_cols):
@@ -202,6 +196,7 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
     print(f"Durbin-Watson   = {dw:.3f} (about 2 is ideal)")
     print(f"Influential points (Cook's D > 4/n): {n_infl}")
 
+
     hold, cv = evaluate_split(df, x_cols, y_col, groups=groups)
     print("\nMODEL EVALUATION"); print("-" * 80)
     print(f"In-sample R2 = {model.rsquared:.4f} | Adj R2 = {model.rsquared_adj:.4f} | "
@@ -214,7 +209,7 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
     print(f"5-fold CV x20: R2 = {cv['CV_R2']:.4f} (SD {cv['CV_R2_SD']:.4f}), RMSE = {cv['CV_RMSE']:.4f}, "
           f"MAE = {cv['CV_MAE']:.4f}, baseline RMSE = {cv['CV_Baseline_RMSE']:.4f}")
 
-    # plots
+    # plottings
     fig, ax = plt.subplots(2, 2, figsize=(12, 9))
     ax[0, 0].scatter(fitted, y, alpha=0.7)
     lo, hi = min(fitted.min(), y.min()), max(fitted.max(), y.max())
@@ -244,6 +239,7 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
         plt.show()
     plt.close("all")
 
+
     return {"Model": tag, "n": len(df), "R2": model.rsquared,
             "Adj_R2": model.rsquared_adj, "RMSE": rmse(y, fitted),
             "MAE": mean_absolute_error(y, fitted), "F_p_value": model.f_pvalue,
@@ -253,20 +249,20 @@ def run_regression(df, x_cols, y_col, title, tag, groups=None):
             "Significant_vars": ", ".join(coef_table.index[coef_table["p_value"] < 0.05])}
 
 
-# ==============================================================
-# RUN BOTH MODELS
-# ==============================================================
+
+# running both models
 res21 = run_regression(dataset_21, X21_COLS, Y21,
                        "LINEAR REGRESSION 2.1 - GOAL DIFFERENCE (104 matches)", "Model_2_1")
 res22 = run_regression(dataset_22, X22_COLS, Y22,
                        "LINEAR REGRESSION 2.2 - GOALS SCORED (208 team-match rows)",
                        "Model_2_2", groups=groups22)
 
-# ==============================================================
-# COMPETING ALGORITHMS (Yakub, Objective 2 Padlet, 1 Oct)
-# Linear regression is built first (above), then compared with other
-# scikit-learn regressors (ensemble) using the same repeated 5-fold CV.
-# ==============================================================
+
+
+# completing algorithm comparison
+# Linear regression is built first, then compared with other scikitlearn regressors using the same repeated 5 fold CV
+
+
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor
 
 

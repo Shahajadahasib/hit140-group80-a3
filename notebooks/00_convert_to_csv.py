@@ -1,5 +1,4 @@
-# Convert the two Objective 2 datasets from Excel to CSV
-# (Yakub, Objective 1 Padlet: datasets are saved as .csv).
+# this file converts the two datasets from xlsx to CSV
 # The .xlsx files are kept; the main script reads the .csv copies.
 import os
 import pandas as pd
