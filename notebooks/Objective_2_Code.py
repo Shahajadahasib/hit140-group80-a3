@@ -133,7 +133,7 @@ def evaluate_split(df, x_cols, y_col, groups=None):
 
 
 def run_regression(df, x_cols, y_col, title, tag, groups=None):
-    print("\n\n" + "#" * 80); print(title); print("#" * 80)
+    print("\n\n" + "-" * 30); print(title); print("-" * 30)
 
     print("\nDESCRIPTIVE STATISTICS"); print("-" * 80)
     print(df[[y_col] + x_cols].describe().T.round(3))
@@ -270,7 +270,7 @@ def compare_algorithms(df, x_cols, y_col, tag, groups=None, n_repeats=20):
     X, y = df[x_cols].values, df[y_col].values
     candidates = {
         "Linear Regression": LinearRegression(),
-        "Random Forest": RandomForestRegressor(random_state=SEED),
+        "Random Forest": RandomForestRegressor(random_state=SEED, n_jobs=-1),
         "Gradient Boosting": GradientBoostingRegressor(random_state=SEED),
     }
     rows = []
@@ -306,6 +306,170 @@ def compare_algorithms(df, x_cols, y_col, tag, groups=None, n_repeats=20):
 
 cmp21 = compare_algorithms(dataset_21, X21_COLS, Y21, "Model_2_1")
 cmp22 = compare_algorithms(dataset_22, X22_COLS, Y22, "Model_2_2", groups=groups22)
+
+# OPTIMISATION
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler, PowerTransformer, FunctionTransformer
+from sklearn.compose import ColumnTransformer
+
+
+def cv_scores(model, X, y, groups=None, n_repeats=20):
+    """Mean R2, MSE, RMSE, NRMSE and MAE over repeated 5-fold CV."""
+    r2s, mses, maes = [], [], []
+    for rep in range(n_repeats):
+        if groups is None:
+            splitter = KFold(5, shuffle=True, random_state=SEED + rep).split(X)
+        else:
+            splitter = GroupKFold(5, shuffle=True, random_state=SEED + rep).split(X, y, groups)
+        for a, b in splitter:
+            pred = model.fit(X.iloc[a], y[a]).predict(X.iloc[b])
+            r2s.append(r2_score(y[b], pred))
+            mses.append(mean_squared_error(y[b], pred))
+            maes.append(mean_absolute_error(y[b], pred))
+    mse = np.mean(mses)
+    rmse_ = np.mean(np.sqrt(mses))
+    return {"CV_R2": np.mean(r2s), "CV_MSE": mse, "CV_RMSE": rmse_,
+            "CV_NRMSE": rmse_ / (y.max() - y.min()), "CV_MAE": np.mean(maes)}
+
+
+def skewed_positive(df, cols, limit=0.75):
+    """Columns that are never negative and clearly right-skewed (log is possible)."""
+    return [c for c in cols if df[c].min() >= 0 and df[c].nunique() > 2
+            and abs(df[c].skew()) > limit]
+
+
+def optimise(df, x_cols, y_col, tag, groups=None):
+    X, y = df[x_cols], df[y_col].values
+    print("\n\n" + "-" * 15); print(f"OPTIMISATION - {tag}"); print("-" * 15)
+
+    # step 1: log transform of skewed, non-negative variables
+    to_log = skewed_positive(df, x_cols)
+    log_step = ColumnTransformer([("log", FunctionTransformer(np.log1p), to_log)],
+                                 remainder="passthrough") if to_log else "passthrough"
+
+    # step 2: multicolinearity
+    corr = df[x_cols].corr().abs().where(~np.eye(len(x_cols), dtype=bool))
+    a_, b_ = corr.stack().idxmax()
+    pair_r = corr.loc[a_, b_]
+    keep_r = df[[a_, b_, y_col]].corr()[y_col].abs()
+    drop = a_ if keep_r[a_] < keep_r[b_] else b_
+    reduced = [c for c in x_cols if c != drop]
+
+    steps = {
+        "0. Original model (8 variables)": (LinearRegression(), x_cols),
+        f"1. Log transform ({len(to_log)} skewed variables)":
+            (make_pipeline(log_step, LinearRegression()), x_cols),
+        f"2. Drop {drop} (r = {pair_r:.2f} with {b_ if drop == a_ else a_}) - 7 variables":
+            (LinearRegression(), reduced),
+        "3. Z-score scaling (StandardScaler)": (make_pipeline(StandardScaler(), LinearRegression()), x_cols),
+        "4. Yeo-Johnson transform (PowerTransformer)":
+            (make_pipeline(PowerTransformer(method="yeo-johnson"), LinearRegression()), x_cols),
+    }
+    rows = []
+    for name, (model, cols) in steps.items():
+        res = cv_scores(model, df[cols], y, groups)
+        rows.append({"Step": name, **res})
+    table = pd.DataFrame(rows)
+    base = table.loc[0, "CV_RMSE"]
+    table["RMSE_change_%"] = (table["CV_RMSE"] - base) / base * 100
+    pd.set_option("display.width", 200)
+    print("Log-transformed:", to_log or "none (no variable is both non-negative and skewed)")
+    print(table.round(4).to_string(index=False))
+    table.to_csv(os.path.join(OUTPUT_DIR, f"{tag}_optimisation.csv"), index=False)
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.barh([s[:48] for s in table["Step"]], table["CV_RMSE"])
+    ax.axvline(base, color="r", ls="--", label="original model")
+    ax.set(title=f"{tag}: optimisation steps (lower RMSE is better)", xlabel="Mean CV RMSE")
+    lo, hi = table["CV_RMSE"].min(), table["CV_RMSE"].max()
+    ax.set_xlim(lo - (hi - lo) * 1.5 - 0.005, hi + (hi - lo) * 0.5 + 0.005)  # zoom in so small changes are visible
+    for i, v in enumerate(table["CV_RMSE"]):
+        ax.text(v, i, f" {v:.3f}", va="center", fontsize=9)
+    ax.invert_yaxis(); ax.legend(loc="lower right"); fig.tight_layout()
+    fig.savefig(os.path.join(OUTPUT_DIR, f"{tag}_optimisation.png"), dpi=150)
+    plt.close(fig)
+
+    # regression equation of the original model (fitted on all rows)
+    lr = LinearRegression().fit(X, y)
+    terms = " ".join(f"{'+' if c >= 0 else '-'} {abs(c):.4f} x {n}" for n, c in zip(x_cols, lr.coef_))
+    print(f"\nREGRESSION EQUATION - {tag}\n{y_col} = {lr.intercept_:.4f} {terms}")
+    return table
+
+
+opt21 = optimise(dataset_21, X21_COLS, Y21, "Model_2_1")
+opt22 = optimise(dataset_22, X22_COLS, Y22, "Model_2_2", groups=groups22)
+
+# round 2: yeo-johnson + ridge / lasso, best one picked on train, tested on hold-out
+from sklearn.linear_model import RidgeCV, LassoCV
+
+ALPHAS = np.logspace(-3, 3, 13)   # penalty strengths to try (kept small so it runs fast)
+
+
+def iterations():
+    return {
+        "0. Linear regression (original)": LinearRegression(),
+        "1. Yeo-Johnson + linear regression": make_pipeline(PowerTransformer(), LinearRegression()),
+        "2. Yeo-Johnson + Ridge": make_pipeline(PowerTransformer(), RidgeCV(alphas=ALPHAS)),
+        "3. Yeo-Johnson + Lasso": make_pipeline(PowerTransformer(),
+                                                LassoCV(alphas=ALPHAS, cv=5, random_state=SEED, n_jobs=-1)),
+    }
+
+
+def optimise_round2(df, x_cols, y_col, tag, groups=None):
+    print("\n\n" + "-" * 15); print(f"OPTIMISATION ROUND 2 - {tag}"); print("-" * 15)
+    X, y = df[x_cols], df[y_col].values
+
+    # 1- all data, repeated cv
+    rows = []
+    for name, model in iterations().items():
+        rows.append({"Iteration": name, **cv_scores(model, X, y, groups)})
+    table = pd.DataFrame(rows)
+    base = table.loc[0, "CV_RMSE"]
+    table["RMSE_change_%"] = (table["CV_RMSE"] - base) / base * 100
+
+    # 2- fair selection: choose on the 80% training part, test once on the 20% hold-out
+    if groups is None:
+        tr, te = train_test_split(np.arange(len(y)), test_size=0.2, random_state=SEED)
+        g_tr = None
+    else:
+        tr, te = next(GroupShuffleSplit(1, test_size=0.2, random_state=SEED).split(X, y, groups))
+        g_tr = groups[tr]
+    sel = {name: cv_scores(m, X.iloc[tr].reset_index(drop=True), y[tr], g_tr, n_repeats=10)["CV_RMSE"]
+           for name, m in iterations().items()}
+    best = min(sel, key=sel.get)
+    hold = {}
+    for name in ["0. Linear regression (original)", best]:
+        pred = iterations()[name].fit(X.iloc[tr], y[tr]).predict(X.iloc[te])
+        hold[name] = (r2_score(y[te], pred), rmse(y[te], pred))
+
+    print(table.round(4).to_string(index=False))
+    print(f"\nBest iteration chosen on training data only: {best}")
+    for name, (r2h, rmh) in hold.items():
+        print(f"  Hold-out test (n={len(te)}): {name:40s} R2 = {r2h:.4f}, RMSE = {rmh:.4f}")
+
+    final = iterations()[best].fit(X, y)
+    est = final[-1] if hasattr(final, "steps") else final
+    if hasattr(est, "coef_"):
+        print("\nFinal model coefficients (on Yeo-Johnson scale where used):")
+        print(pd.Series(est.coef_, index=x_cols).round(4).to_string())
+
+    table.to_csv(os.path.join(OUTPUT_DIR, f"{tag}_optimisation_round2.csv"), index=False)
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.barh(table["Iteration"], table["CV_RMSE"])
+    lo, hi = table["CV_RMSE"].min(), table["CV_RMSE"].max()
+    ax.set_xlim(lo - (hi - lo) * 1.5 - 0.005, hi + (hi - lo) * 0.5 + 0.005)
+    for i, v in enumerate(table["CV_RMSE"]):
+        ax.text(v, i, f" {v:.3f}", va="center", fontsize=9)
+    ax.axvline(base, color="r", ls="--", label="original model")
+    ax.set(title=f"{tag}: optimisation round 2 (lower RMSE is better)", xlabel="Mean CV RMSE")
+    ax.invert_yaxis(); ax.legend(loc="lower right"); fig.tight_layout()
+    fig.savefig(os.path.join(OUTPUT_DIR, f"{tag}_optimisation_round2.png"), dpi=150)
+    plt.close(fig)
+    return table, best, hold
+
+
+r2_21 = optimise_round2(dataset_21, X21_COLS, Y21, "Model_2_1")
+r2_22 = optimise_round2(dataset_22, X22_COLS, Y22, "Model_2_2", groups=groups22)
 
 summary = pd.DataFrame([res21, res22])
 print("\n\n" + "=" * 80); print("FINAL MODEL COMPARISON"); print("=" * 80)
