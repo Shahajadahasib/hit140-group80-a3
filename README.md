@@ -63,8 +63,8 @@ figures/     charts and result tables produced by the script
 
 ## Data sources
 
-- **Match results (scores):** [CHECK: source, e.g. FBref "Scores & Fixtures"]. Each team's total goals were cross-checked against FIFA's official team statistics.
-- **FIFA ranking:** FIFA Men's World Ranking, [CHECK: release date used] – https://www.fifa.com/en/world-rankings
+- **Match results (scores):** official FIFA World Cup 2026 match results (https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026). All 48 teams' goal totals in our dataset match FIFA's official team statistics.
+- **FIFA ranking:** FIFA/Coca-Cola Men's World Ranking, June 2026 release (published 11 June 2026, before the opening match, so it is pre-match data) – https://inside.fifa.com/fifa-world-ranking/men
 - **Squad market value:** Transfermarkt squad values, June 2026 (used as ln(value A / value B))
 - **Squad average age:** official FIFA World Cup 2026 squad lists (2 June 2026)
 - **Rest days, prior goals, points per game and clean-sheet rates:** calculated from earlier World Cup 2026 matches only, so nothing comes from the match being predicted.
